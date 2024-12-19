@@ -1,9 +1,11 @@
+import os
 import torch
 import torchaudio
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 import random
 import numpy as np
+from torchaudio.datasets import SPEECHCOMMANDS
 
 
 class PDMEncodeur_seq(torch.nn.Module):
@@ -69,13 +71,11 @@ class DataAug(torch.nn.Module):
         return waveform
 
 
-"""
-For all subsets (train, valid, test) the individuals waveforms are loaded with torchaudio, stacked and saved as a pytorch tensor (train_data.pt, valid_data.pt, test_data.pt)
-For all subsets (train, valid, test) the corresponding labels are stacked and saved as numpy arrays (train_targets.npy, valid_targets.npy, test_targets.npy)
-"""
 class InMemoryGSCDataset(Dataset):
-    def __init__(self, subset="train", root="./Data/", transform=None, n_examples=None, pdm_factor=10, device=None, **kwargs):
+    def __init__(self, subset="train", root="./Data/", transform=None, n_examples=None, pdm_factor=10, device=None, download=True, **kwargs):
         super().__init__()
+        os.makedirs(root, exist_ok=True)
+        # Define the labels from the Google Speech Commands dataset
         self.labels = ['backward', 'bed', 'bird', 'cat', 'dog', 'down', 'eight', 'five', 'follow', 'forward', 'four', 'go', 'happy', 'house', 'learn', 'left', 'marvin', 
                         'nine', 'no', 'off', 'on', 'one', 'right', 'seven', 'sheila', 'six', 'stop', 'three', 'tree', 'two', 'up', 'visual', 'wow', 'yes', 'zero']
 
@@ -86,55 +86,64 @@ class InMemoryGSCDataset(Dataset):
         self.pdm_encodeur = None
         self.transform = transform
         self.n_examples = n_examples
+        # Convert (train, test, valid) into (training, validation, testing)
+        self.subset = "validation" if subset=="valid" else (subset+"ing")
         
-        self.waveforms = torch.load(root+f"SpeechCommands/{subset}_data.pt")
-        labels_ = np.load(root+f"SpeechCommands/{subset}_targets.npy")
-        self.label_indexes = torch.tensor([self.labels.index(l) for l in labels_])
-        
+        # Load the dataset
+        self.dataset = SPEECHCOMMANDS(root, download=True, subset=self.subset)
+        # Apply PDM encoding if needed
         if self.pdm_factor>0: 
             self.pdm_encodeur = PDMEncodeur(self.pdm_factor, self.sc_sample_rate).to(device)
 
-        if self.n_examples and self.n_examples<1 and self.n_examples>0: self.reduce_size()
+        # Apply size reduction if needed
+        if self.n_examples and self.n_examples<1 and self.n_examples>0: 
+            self.reduce_size()
 
-        self.label_indexes = self.label_indexes.to(device)
-    
+
     def reduce_size(self):
-        part_len = int(self.n_examples*len(self.label_indexes))
-        ind = np.arange(len(self.label_indexes))
+        part_len = int(self.n_examples*len(self.dataset._walker))
+        ind = np.arange(len(self.dataset._walker))
         rng = np.random.default_rng(0)
         rng.shuffle(ind)
         ind = ind[:part_len]
-        self.waveforms =  torch.stack([self.waveforms[i] for i in ind])
-        self.label_indexes = torch.stack([self.label_indexes[i] for i in ind])
-        
-        
+        self.dataset._walker = [self.dataset._walker[i] for i in ind]
+
     def to(self, device):
+        # Move dataset to specified device
         self.device = device
-        if self.transform: self.transform = self.transform.to(device)
-        if self.pdm_encodeur: self.pdm_encodeur = self.pdm_encodeur.to(device)
-        if hasattr(self, 'waveforms'): self.waveforms = self.waveforms.to(device)
-        if hasattr(self, 'label_indexes'): self.label_indexes = self.label_indexes.to(device)
+        if self.transform: 
+            self.transform = self.transform.to(device)
+        if self.pdm_encodeur: 
+            self.pdm_encodeur = self.pdm_encodeur.to(device)
         return self
 
-    def __getitem__(self, n):
-        waveform = self.waveforms[n]
+    def __getitem__(self, idx):
+        # Retrieve a single example (waveform and label) from the dataset
+        waveform, _, label, _, _ = self.dataset[idx]
         waveform = waveform.to(self.device)
+        n_pad = self.sc_sample_rate*self.sc_duration_s - waveform.shape[-1]
+        if n_pad != 0:
+           waveform = F.pad(waveform, (0,n_pad))
         
+        # Apply transformations if any
         if self.transform:
-           waveform = self.transform(waveform)
+            waveform = self.transform(waveform)
+        
+        # Apply PDM encoding if enabled
         if self.pdm_encodeur:
             waveform = self.pdm_encodeur(waveform)
 
-        return waveform, self.label_indexes[n]
-    
-    def __len__(self):
-        return len(self.label_indexes)
+        # Convert label to index
+        label_index = self.labels.index(label)
+        
+        return waveform, label_index
 
+    def __len__(self):
+        # Return the length of the dataset
+        return len(self.dataset)
 
 
 if __name__=='__main__':
-    import os
-    os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--n_examples', type=int, default=None)
@@ -148,13 +157,11 @@ if __name__=='__main__':
     dataset = InMemoryGSCDataset(root=args.data_dir, subset="test",
                            transform=args.transform, pdm_factor=args.pdm_factor,
                            n_examples=args.n_examples, device=device)
-    len(dataset)
-    len(dataset.labels)
-    class_weights = torch.unique(dataset.label_indexes, return_counts=True)[1]/len(dataset)
-    sample_weights = class_weights[dataset.label_indexes].tolist()
+    print("Number of samples:", len(dataset), "Number of classes:", len(dataset.labels))
+    
+
     def plot_waveform(x, ax):
         ax.plot(x.cpu().squeeze())
-        ax.set_xlabel('Sample Index')
 
     import matplotlib.pylab as plt
     for example_index in torch.randint(len(dataset), size=(2,)):
@@ -162,5 +169,5 @@ if __name__=='__main__':
         
         fig, ax = plt.subplots(1, 1)
         plot_waveform(waveform, ax)
-        #ax.set_title(dataset.labels[index])
+        ax.set_title(dataset.labels[index])
         plt.show()
