@@ -19,8 +19,15 @@ To utilize the code provided in this repository, follow these steps:
 
 ## Citation
 If you find this work useful and utilize the code or ideas presented here, please consider citing our paper:
-
-\[Coming...\]
+```
+@inproceedings{yarga2024neuromorphic,
+  title={Neuromorphic Keyword Spotting with Pulse Density Modulation MEMS Microphones},
+  author={Yarga, Sidi Yaya Arnaud and Wood, Sean UN},
+  booktitle={Proc. Interspeech 2024},
+  pages={3275--3279},
+  year={2024}
+}
+```
 
 ## Contact
 For any inquiries or assistance regarding the code or paper, feel free to contact the authors:
